@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+    <meta charset="UTF-8">
+    <title>弹幕客户端</title>
+    <style>
+        body { background: transparent; margin: 0; overflow: hidden; }
+        .danmu {
+            position: absolute;
+            left: 100%;
+            white-space: nowrap;
+            pointer-events: none;
+            text-shadow: 2px 2px 8px #000;
+            will-change: left;
+            color: white;
+            font-size: 40px;
+            font-family: sans-serif;
+            transition: none;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="danmu-container"></div>
+    <script>
+        // 配置项
+        const defaultColor = "white";
+        const defaultSize = 40; // px
+        const speed = 144; // px/s
+        const font = "sans-serif";
+        const maxLines = 5;
+        const minSpaceBetween = 200; // 同行弹幕最小间距(px)
+        const pollInterval = 100; // 轮询间隔，0.1秒
+
+        // 各行弹幕位置追踪
+        let trackRows = [
+            [], [], [], [], []
+        ];
+        
+        // 首条弹幕标志
+        let firstMessageLoaded = false;
+
+        function showDanmu(text) {
+            if (!text) return;
+            
+            // 找出最适合的行
+            let bestRow = 0;
+            let bestSpace = -Infinity;
+            
+            for (let i = 0; i < maxLines; i++) {
+                let rowItems = trackRows[i];
+                let rightmostX = -Infinity;
+                
+                // 找出该行最靠右的弹幕x坐标
+                for (let item of rowItems) {
+                    const rect = item.getBoundingClientRect();
+                    const itemRight = rect.right;
+                    rightmostX = Math.max(rightmostX, itemRight);
+                }
+                
+                const availableSpace = rightmostX === -Infinity ? 
+                    Infinity : window.innerWidth - rightmostX;
+                    
+                // 找出空间最大的行
+                if (availableSpace > bestSpace && 
+                    (availableSpace >= minSpaceBetween || availableSpace === Infinity)) {
+                    bestSpace = availableSpace;
+                    bestRow = i;
+                }
+            }
+            
+            // 创建新弹幕元素
+            const danmu = document.createElement('div');
+            danmu.className = 'danmu';
+            danmu.textContent = text;
+            danmu.style.color = defaultColor;
+            danmu.style.fontSize = defaultSize + "px";
+            danmu.style.fontFamily = font;
+            danmu.style.top = (10 + bestRow * (defaultSize + 10)) + "px";
+            danmu.style.transition = 'none';
+            danmu.style.left = '100%';
+            danmu.style.display = 'block';
+
+            const container = document.getElementById('danmu-container');
+            container.appendChild(danmu);
+            trackRows[bestRow].push(danmu);
+
+            // 计算动画时长
+            const bodyWidth = document.body.clientWidth;
+            const textWidth = danmu.offsetWidth || (text.length * defaultSize);
+            const totalDistance = bodyWidth + textWidth;
+            const duration = totalDistance / speed;
+
+            // 强制重绘
+            void danmu.offsetWidth;
+            danmu.style.transition = `left ${duration}s linear`;
+            danmu.style.left = `-${textWidth}px`;
+
+            setTimeout(() => {
+                danmu.remove();
+                const index = trackRows[bestRow].indexOf(danmu);
+                if (index > -1) {
+                    trackRows[bestRow].splice(index, 1);
+                }
+            }, duration * 1000);
+        }
+
+        // WebSocket连接
+        let ws = null;
+
+        function connectWS() {
+            ws = new WebSocket('ws://127.0.0.1:233/ws');
+            ws.onopen = () => {
+                console.log("WebSocket已连接");
+            };
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    const text = data.text || "";
+                    
+                    // 首条消息或任何新消息都显示
+                    if (text && (!firstMessageLoaded || true)) {
+                        firstMessageLoaded = true;
+                        showDanmu(text);
+                    }
+                } catch (e) {
+                    console.log("解析WebSocket消息错误:", e);
+                }
+            };
+            ws.onclose = () => {
+                console.log("WebSocket已断开，正在重连...");
+                setTimeout(connectWS, 2000);
+            };
+            ws.onerror = (e) => {
+                console.log("WebSocket错误:", e);
+            };
+        }
+        
+        // HTTP轮询 - 当收到消息时总是显示
+        async function pollMessages() {
+            try {
+                const response = await fetch('http://127.0.0.1:2334/');
+                if (response.ok) {
+                    const data = await response.json();
+                    const text = data.text || "";
+                    
+                    // 无论是否是新消息，只要有内容就显示
+                    if (text) {
+                        // 确保首条消息已加载
+                        if (!firstMessageLoaded) {
+                            firstMessageLoaded = true;
+                            showDanmu(text);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.log("轮询错误:", e);
+            }
+            setTimeout(pollMessages, pollInterval);
+        }
+
+        // 启动WebSocket连接
+        connectWS();
+        
+        // 同时启动HTTP轮询作为备份
+        pollMessages();
+    </script>
+</body>
+</html>
